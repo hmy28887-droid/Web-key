@@ -1,53 +1,38 @@
 from flask import Flask, request, jsonify, render_template_string, redirect, session
+from datetime import datetime, timedelta
 import sqlite3
-import datetime
-import hashlib
 import os
+import uuid
 
 app = Flask(__name__)
-app.secret_key = "CHANGE_THIS_SECRET_KEY"
+app.secret_key = "super_secret_admin_key"
 
-DB = "keys.db"
-
-ADMIN_USER = "hoangnam0303"
-ADMIN_PASS = "hoangnam0804"
+DATABASE = "keys.db"
 
 # ================= DATABASE =================
 
 def init_db():
-    conn = sqlite3.connect(DB)
+    conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
     c.execute("""
-        CREATE TABLE IF NOT EXISTS licenses (
-            key TEXT PRIMARY KEY,
-            expiry TEXT,
+        CREATE TABLE IF NOT EXISTS keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            license_key TEXT UNIQUE,
             device_id TEXT,
-            max_devices INTEGER
+            max_devices INTEGER,
+            expiry_date TEXT,
+            status TEXT
         )
     """)
     conn.commit()
     conn.close()
 
-def generate_key(days):
-    key_raw = hashlib.sha256(os.urandom(64)).hexdigest()[:20]
-
-    if days == 0:
-        expiry = "never"
-    else:
-        expiry = (datetime.datetime.now() + datetime.timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
-
-    conn = sqlite3.connect(DB)
-    c = conn.cursor()
-    c.execute("INSERT INTO licenses VALUES (?, ?, ?, ?)", (key_raw, expiry, None, 1))
-    conn.commit()
-    conn.close()
-
-    return key_raw
+init_db()
 
 # ================= LOGIN =================
 
-def login_required():
-    return "admin" in session
+ADMIN_USER = "admin"
+ADMIN_PASS = "hoangnam0804"
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -55,146 +40,117 @@ def login():
         if request.form["username"] == ADMIN_USER and request.form["password"] == ADMIN_PASS:
             session["admin"] = True
             return redirect("/")
+        else:
+            return "Sai tài khoản hoặc mật khẩu"
     return """
-    <body style='background:#111;color:white;font-family:sans-serif;text-align:center;padding-top:120px'>
-    <h2>🔐 Admin Login</h2>
-    <form method='POST'>
-    <input name='username' placeholder='Username'><br><br>
-    <input name='password' type='password' placeholder='Password'><br><br>
-    <button>Login</button>
+    <h2>Admin Login</h2>
+    <form method="post">
+        <input name="username" placeholder="Username"><br><br>
+        <input name="password" type="password" placeholder="Password"><br><br>
+        <button type="submit">Login</button>
     </form>
-    </body>
     """
 
-@app.route("/logout")
-def logout():
-    session.clear()
-    return redirect("/login")
+def require_login():
+    if "admin" not in session:
+        return False
+    return True
 
-# ================= DASHBOARD =================
+# ================= ADMIN PANEL =================
 
 @app.route("/")
-def admin():
-    if not login_required():
+def home():
+    if not require_login():
         return redirect("/login")
 
-    conn = sqlite3.connect(DB)
+    conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    c.execute("SELECT * FROM licenses")
-    data = c.fetchall()
+    c.execute("SELECT * FROM keys")
+    keys = c.fetchall()
     conn.close()
 
     html = """
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
-
-    <body class="bg-dark text-light">
-    <div class="container mt-5">
-
-    <div class="card bg-black border-secondary p-3">
-    <h5><i class="fa-solid fa-key"></i> Khóa cấp phép</h5>
-
-    <form method="POST" action="/create" class="row g-2 mb-3">
-        <div class="col-auto">
-            <input class="form-control bg-dark text-light border-secondary" name="days" placeholder="Số ngày (0 = không hết hạn)">
-        </div>
-        <div class="col-auto">
-            <button class="btn btn-warning">Tạo key</button>
-        </div>
-        <div class="col-auto">
-            <a href="/logout" class="btn btn-danger">Logout</a>
-        </div>
-    </form>
-
-    <table class="table table-dark align-middle">
-    <thead>
-        <tr>
-            <th>Chìa khóa</th>
-            <th>Thiết bị</th>
-            <th>Hạn sử dụng</th>
-            <th>Trạng thái</th>
-            <th>Hành động</th>
-        </tr>
-    </thead>
-    <tbody>
-    {% for row in data %}
-        <tr>
-            <td>{{row[0]}}</td>
-
-            <td>
-                {% if row[2] %}
-                    <span class="badge bg-danger">1/1</span>
-                {% else %}
-                    <span class="badge bg-secondary">0/1</span>
-                {% endif %}
-            </td>
-
-            <td>
-                {% if row[1] == "never" %}
-                    <span class="badge bg-info"><i class="fa-solid fa-infinity"></i> Không hết hạn</span>
-                {% else %}
-                    <span class="badge bg-info">{{row[1]}}</span>
-                {% endif %}
-            </td>
-
-            <td>
-                <span class="badge bg-success">Tích cực</span>
-            </td>
-
-            <td>
-                <a href="/reset/{{row[0]}}" class="btn btn-warning btn-sm">
-                    <i class="fa-solid fa-rotate"></i>
-                </a>
-
-                <a href="/delete/{{row[0]}}" class="btn btn-danger btn-sm"
-                onclick="return confirm('Xóa key này?')">
-                    <i class="fa-solid fa-trash"></i>
-                </a>
-            </td>
-
-        </tr>
-    {% endfor %}
-    </tbody>
-    </table>
-    </div>
-    </div>
-    </body>
+    <h2>Quản lý Key</h2>
+    <a href='/create'>Tạo Key</a><br><br>
+    <table border=1 cellpadding=5>
+    <tr>
+        <th>Key</th>
+        <th>Thiết bị</th>
+        <th>Hạn sử dụng</th>
+        <th>Trạng thái</th>
+        <th>Hành động</th>
+    </tr>
     """
-    return render_template_string(html, data=data)
 
-# ================= ACTIONS =================
+    for k in keys:
+        expiry = "Không hết hạn" if k[4] == "never" else k[4]
+        device_display = "0/1" if not k[2] else "1/1"
 
-@app.route("/create", methods=["POST"])
-def create():
-    if not login_required():
+        html += f"""
+        <tr>
+            <td>{k[1]}</td>
+            <td>{device_display}</td>
+            <td>{expiry}</td>
+            <td>{k[5]}</td>
+            <td>
+                <a href='/reset/{k[0]}'>🟡 Reset</a>
+                <a href='/delete/{k[0]}'>🔴 Xóa</a>
+            </td>
+        </tr>
+        """
+
+    html += "</table>"
+    return render_template_string(html)
+
+# ================= CREATE KEY =================
+
+@app.route("/create")
+def create_key():
+    if not require_login():
         return redirect("/login")
 
-    days = int(request.form["days"])
-    generate_key(days)
-    return redirect("/")
+    new_key = str(uuid.uuid4()).replace("-", "")[:16].upper()
+    expiry = "never"
 
-@app.route("/delete/<key>")
-def delete_key(key):
-    if not login_required():
-        return redirect("/login")
-
-    conn = sqlite3.connect(DB)
+    conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    c.execute("DELETE FROM licenses WHERE key=?", (key,))
+    c.execute("""
+        INSERT INTO keys (license_key, device_id, max_devices, expiry_date, status)
+        VALUES (?, ?, ?, ?, ?)
+    """, (new_key, "", 1, expiry, "active"))
     conn.commit()
     conn.close()
+
     return redirect("/")
 
-@app.route("/reset/<key>")
-def reset_device(key):
-    if not login_required():
+# ================= DELETE KEY =================
+
+@app.route("/delete/<int:key_id>")
+def delete_key(key_id):
+    if not require_login():
         return redirect("/login")
 
-    conn = sqlite3.connect(DB)
+    conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    c.execute("UPDATE licenses SET device_id=NULL WHERE key=?", (key,))
+    c.execute("DELETE FROM keys WHERE id=?", (key_id,))
     conn.commit()
     conn.close()
+
+    return redirect("/")
+
+# ================= RESET DEVICE =================
+
+@app.route("/reset/<int:key_id>")
+def reset_device(key_id):
+    if not require_login():
+        return redirect("/login")
+
+    conn = sqlite3.connect(DATABASE)
+    c = conn.cursor()
+    c.execute("UPDATE keys SET device_id='' WHERE id=?", (key_id,))
+    conn.commit()
+    conn.close()
+
     return redirect("/")
 
 # ================= VERIFY API =================
@@ -202,39 +158,39 @@ def reset_device(key):
 @app.route("/verify", methods=["POST"])
 def verify():
     data = request.json
-    user_key = data.get("key")
+    key = data.get("key")
     device_id = data.get("device_id")
 
-    conn = sqlite3.connect(DB)
+    conn = sqlite3.connect(DATABASE)
     c = conn.cursor()
-    c.execute("SELECT expiry, device_id FROM licenses WHERE key=?", (user_key,))
-    row = c.fetchone()
-    conn.close()
+    c.execute("SELECT * FROM keys WHERE license_key=?", (key,))
+    result = c.fetchone()
 
-    if not row:
+    if not result:
         return jsonify({"status": "invalid"})
 
-    expiry, saved_device = row
+    if result[5] != "active":
+        return jsonify({"status": "disabled"})
 
-    if expiry != "never":
-        expiry_time = datetime.datetime.strptime(expiry, "%Y-%m-%d %H:%M:%S")
-        if datetime.datetime.now() > expiry_time:
+    # Check expiry
+    if result[4] != "never":
+        expiry_date = datetime.strptime(result[4], "%Y-%m-%d")
+        if datetime.now() > expiry_date:
             return jsonify({"status": "expired"})
 
-    if saved_device is None:
-        conn = sqlite3.connect(DB)
-        c = conn.cursor()
-        c.execute("UPDATE licenses SET device_id=? WHERE key=?", (device_id, user_key))
+    # Device binding
+    if not result[2]:
+        c.execute("UPDATE keys SET device_id=? WHERE id=?", (device_id, result[0]))
         conn.commit()
-        conn.close()
-        return jsonify({"status": "valid"})
+    elif result[2] != device_id:
+        return jsonify({"status": "device_limit"})
 
-    if saved_device != device_id:
-        return jsonify({"status": "wrong_device"})
-
+    conn.close()
     return jsonify({"status": "valid"})
 
+# ================= RENDER PORT FIX =================
+
 if __name__ == "__main__":
-    init_db()
-    app.run()
-  
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+        
